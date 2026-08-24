@@ -128,7 +128,7 @@ vm = vm.replace(
     }
 ''',
 '''    init {
-        // A26 v1.0 ships a complete benchmark voice pack. Materialize assets once,
+        // A26 v1.1 Compatibility ships a complete benchmark voice pack. Materialize assets once,
         // then load all three ONNX sessions automatically. Manual pickers remain
         // available only as a fallback/debug path.
         preloadBundledVoicePack()
@@ -153,7 +153,7 @@ vm = vm.replace(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val synth = materialize("female.onnx")
-                val hubert = materialize("contentvec_768l12_q8.onnx")
+                val hubert = materialize("contentvec_768l12.onnx")
                 val rmvpe = materialize("rmvpe_20231006.onnx")
                 withContext(Dispatchers.Main) {
                     setModel(synth.toUri())
@@ -188,7 +188,7 @@ print('patched ConversionViewModel.kt')
 # 5) Brand/version marker for this benchmark build.
 main_path = ROOT / 'app/src/main/java/com/ouor/rvcandroid/MainActivity.kt'
 main = main_path.read_text()
-main = main.replace('RVC Android', 'A26 AI Female Voice')
+main = main.replace('RVC Android', 'A26 AI Female Voice v1.1')
 main_path.write_text(main)
 print('patched MainActivity.kt')
 
@@ -213,5 +213,6 @@ replacement = '''    packaging {
 if needle not in gradle:
     raise RuntimeError('build.gradle.kts packaging block not found')
 gradle = gradle.replace(needle, replacement)
+gradle = gradle.replace('versionName = "1.0"', 'versionName = "1.1-compat"')
 gradle_path.write_text(gradle)
 print('patched app/build.gradle.kts')
