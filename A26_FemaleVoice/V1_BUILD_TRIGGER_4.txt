@@ -1,0 +1,1 @@
+Build v1.0 all-in-one with FP16 female synth and FP16 RMVPE to fit artifact download limit.
