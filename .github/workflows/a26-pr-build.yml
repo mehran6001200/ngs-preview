@@ -1,4 +1,7 @@
 name: A26 v1.0 All-in-One AI Build
+permissions:
+  contents: write
+
 on:
   pull_request:
     branches: [ main ]
@@ -198,3 +201,17 @@ jobs:
           name: A26-FemaleVoice-v1.0-ALL-IN-ONE-FP16
           path: rvc/app/build/outputs/apk/debug/app-debug.apk
           compression-level: 0
+
+      - name: Publish direct GitHub Release
+        if: github.head_ref == 'a26-build-v2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG='a26-v1.0-ai'
+          APK='rvc/app/build/outputs/apk/debug/app-debug.apk'
+          OUT='A26_FemaleVoice_v1.0_ALL_IN_ONE_AI.apk'
+          cp "$APK" "$OUT"
+          gh release delete "$TAG" --cleanup-tag -y >/dev/null 2>&1 || true
+          gh release create "$TAG" "$OUT" \
+            --title 'A26 Female Voice v1.0 AI' \
+            --notes 'All-in-one Android APK with bundled female RVC model, ContentVec and RMVPE. Built by GitHub Actions.'
