@@ -59,7 +59,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.2.2
-          pip install --no-cache-dir "numpy<2" onnx==1.16.2
+          pip install --no-cache-dir "numpy<2" onnx==1.16.2 onnxconverter-common==1.16.0
 
       - name: Download benchmark voice pack sources
         run: |
@@ -68,22 +68,49 @@ jobs:
             'https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/resolve/main/F/All_F/F.pth?download=true'
           curl -L --fail --retry 4 --retry-delay 3 -o models/contentvec_768l12_q8.onnx \
             'https://huggingface.co/TigreGotico/voiceclonnx-rvc/resolve/main/contentvec_768l12_q8.onnx?download=true'
-          curl -L --fail --retry 4 --retry-delay 3 -o models/rmvpe_20231006.onnx \
+          curl -L --fail --retry 4 --retry-delay 3 -o models/rmvpe_fp32.onnx \
             'https://huggingface.co/wok000/vcclient_modules/resolve/main/rmvpe/rmvpe_20231006.onnx?download=true'
           ls -lh models
           test $(stat -c%s models/F.pth) -gt 30000000
           test $(stat -c%s models/contentvec_768l12_q8.onnx) -gt 50000000
-          test $(stat -c%s models/rmvpe_20231006.onnx) -gt 200000000
+          test $(stat -c%s models/rmvpe_fp32.onnx) -gt 200000000
 
       - name: Export female RVC checkpoint to Android ONNX
         run: |
           python A26_FemaleVoice/export_female_onnx.py \
             --voice-changer-server vc/server \
             --input models/F.pth \
-            --output models/female.onnx
-          ls -lh models/female.onnx
+            --output models/female_fp32.onnx
+          ls -lh models/female_fp32.onnx
 
-      - name: Verify ONNX schemas and metadata
+      - name: Convert large inference models to FP16 internally
+        run: |
+          python - <<'PY'
+          import os, onnx
+          from onnxconverter_common import float16
+
+          def convert(src, dst):
+              print('loading', src, os.path.getsize(src))
+              m = onnx.load(src)
+              # Keep public model I/O Float32 so existing Android Java/Kotlin
+              # wrappers remain unchanged; only internal weights/ops use FP16.
+              out = float16.convert_float_to_float16(
+                  m,
+                  keep_io_types=True,
+                  disable_shape_infer=True,
+              )
+              onnx.checker.check_model(out)
+              onnx.save(out, dst)
+              print('saved', dst, os.path.getsize(dst))
+
+          convert('models/female_fp32.onnx', 'models/female.onnx')
+          convert('models/rmvpe_fp32.onnx', 'models/rmvpe_20231006.onnx')
+          PY
+          ls -lh models/*.onnx
+          test $(stat -c%s models/female.onnx) -lt $(stat -c%s models/female_fp32.onnx)
+          test $(stat -c%s models/rmvpe_20231006.onnx) -lt $(stat -c%s models/rmvpe_fp32.onnx)
+
+      - name: Verify ONNX schemas metadata and optimized size
         run: |
           python - <<'PY'
           import json, onnx, os
@@ -110,6 +137,14 @@ jobs:
           ins, outs, _ = info('models/rmvpe_20231006.onnx')
           assert {'waveform','threshold'} <= set(ins), ins
           assert len(outs) >= 1
+
+          total = sum(os.path.getsize(p) for p in [
+              'models/female.onnx',
+              'models/contentvec_768l12_q8.onnx',
+              'models/rmvpe_20231006.onnx',
+          ])
+          print('optimized voice pack bytes=', total)
+          assert total < 420_000_000, total
           PY
 
       - name: Install bundled models into Android assets
@@ -135,11 +170,12 @@ jobs:
         working-directory: rvc
         run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Verify APK contains complete voice pack
+      - name: Verify APK contains complete voice pack and is downloadable
         run: |
           APK=rvc/app/build/outputs/apk/debug/app-debug.apk
           test -f "$APK"
           ls -lh "$APK"
+          test $(stat -c%s "$APK") -lt 520000000
           unzip -l "$APK" | grep -E 'assets/a26/(female|contentvec_768l12_q8|rmvpe_20231006)\.onnx'
           python - <<'PY'
           from zipfile import ZipFile
@@ -154,11 +190,11 @@ jobs:
                   'assets/a26/rmvpe_20231006.onnx',
               }
               assert required <= names, required-names
-              print('APK ZIP integrity OK; voice pack present')
+              print('APK ZIP integrity OK; optimized voice pack present')
           PY
 
       - uses: actions/upload-artifact@v4
         with:
-          name: A26-FemaleVoice-v1.0-ALL-IN-ONE
+          name: A26-FemaleVoice-v1.0-ALL-IN-ONE-FP16
           path: rvc/app/build/outputs/apk/debug/app-debug.apk
           compression-level: 0
