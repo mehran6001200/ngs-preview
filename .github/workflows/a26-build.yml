@@ -2,6 +2,8 @@ name: Build A26 Female Voice APK
 on:
   push:
     branches: [ a26-female-voice ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
