@@ -1,4 +1,4 @@
-name: A26 v1.1 Compatibility AI Build
+name: A26 v1.2 Natural Female Build
 permissions:
   contents: write
 
@@ -146,7 +146,7 @@ jobs:
           cp models/rmvpe_20231006.onnx rvc/app/src/main/assets/a26/rmvpe_20231006.onnx
           ls -lh rvc/app/src/main/assets/a26
 
-      - name: Patch RVC Android for A26 v1.1 compatibility
+      - name: Patch RVC Android for A26 v1.2 natural female
         run: |
           python A26_FemaleVoice/patch_rvc_android_v1.py
           grep -R -n "VOICE_COMMUNICATION\|contentvec_768l12.onnx\|preloadBundledVoicePack" \
@@ -157,7 +157,7 @@ jobs:
           printf '\norg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8\norg.gradle.workers.max=2\n' >> rvc/gradle.properties
           chmod +x rvc/gradlew
 
-      - name: Build A26 v1.1 Compatibility APK
+      - name: Build A26 v1.2 Natural APK
         working-directory: rvc
         run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
@@ -182,16 +182,16 @@ jobs:
               print('APK ZIP integrity OK; full FP32 voice pack present')
           PY
 
-      - name: Publish direct GitHub Release v1.1
+      - name: Publish direct GitHub Release v1.2
         if: github.head_ref == 'a26-build-v2'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG='a26-v1.1-compat'
+          TAG='a26-v1.2-natural'
           APK='rvc/app/build/outputs/apk/debug/app-debug.apk'
-          OUT='A26_FemaleVoice_v1.1_COMPAT_FP32.apk'
+          OUT='A26_FemaleVoice_v1.2_NATURAL_FP32.apk'
           cp "$APK" "$OUT"
           gh release delete "$TAG" --cleanup-tag -y >/dev/null 2>&1 || true
           gh release create "$TAG" "$OUT" \
-            --title 'A26 Female Voice v1.1 Compatibility' \
-            --notes 'Compatibility build: full FP32 ContentVec, RMVPE and female RVC model. No FP16 conversion and no ConvInteger quantized convolution.'
+            --title 'A26 Female Voice v1.2 Natural' \
+            --notes 'Natural female build: full FP32 models plus 48k voice-recognition capture, anti-alias sinc resampling, RMVPE F0 smoothing and default +9 semitones.'
