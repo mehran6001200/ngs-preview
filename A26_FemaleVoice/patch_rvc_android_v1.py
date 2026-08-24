@@ -234,7 +234,8 @@ rmvpe_path = ROOT / 'app/src/main/java/com/ouor/rvcandroid/inference/RmvpePitchE
 rm = rmvpe_path.read_text()
 rm = rm.replace(
     'val shifted = if (f0UpKey == 0) raw else shift(raw, f0UpKey)',
-    'val stable = medianSmoothVoiced(raw)\\n                    val shifted = if (f0UpKey == 0) stable else shift(stable, f0UpKey)'
+    '''val stable = medianSmoothVoiced(raw)
+                    val shifted = if (f0UpKey == 0) stable else shift(stable, f0UpKey)'''
 )
 needle = '''    private fun shift(pitchf: FloatArray, semitones: Int): FloatArray {
         val factor = 2.0.pow(semitones / 12.0).toFloat()
