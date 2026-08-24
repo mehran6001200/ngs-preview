@@ -1,4 +1,4 @@
-name: A26 PR Build
+name: A26 RVC AI Build
 on:
   pull_request:
     branches: [ main ]
@@ -9,9 +9,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: A26_FemaleVoice
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -19,18 +16,34 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
       - run: yes | sdkmanager --licenses >/dev/null || true
-      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-      - name: Fetch formant-aware DSP library
+      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Checkout RVC Android engine
+        uses: actions/checkout@v4
+        with:
+          repository: ouor/RVC-Android
+          ref: main
+          path: rvc
+      - name: Patch capture for Galaxy A26 voice isolation
         run: |
-          mkdir -p app/libs
-          curl -L --fail --retry 3 -o app/libs/TarsosDSPKit-release.aar https://raw.githubusercontent.com/koendv/TarsosDSPKit/master/binaries/TarsosDSPKit-release.aar
-          ls -lh app/libs/TarsosDSPKit-release.aar
-      - run: gradle :app:assembleDebug --stacktrace
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('rvc/app/src/main/java/com/ouor/rvcandroid/audio/PcmRecorder.kt')
+          s = p.read_text()
+          s = s.replace('MediaRecorder.AudioSource.MIC,', 'MediaRecorder.AudioSource.VOICE_COMMUNICATION,')
+          s = s.replace('import android.media.MediaRecorder\n', 'import android.media.MediaRecorder\nimport android.media.audiofx.NoiseSuppressor\n')
+          s = s.replace('private var record: AudioRecord? = null\n', 'private var record: AudioRecord? = null\n    private var noiseSuppressor: NoiseSuppressor? = null\n')
+          s = s.replace('rec.startRecording()\n\n        record = rec', 'noiseSuppressor = if (NoiseSuppressor.isAvailable()) {\n            runCatching { NoiseSuppressor.create(rec.audioSessionId)?.also { it.enabled = true } }.getOrNull()\n        } else null\n        rec.startRecording()\n\n        record = rec')
+          s = s.replace('record = null\n        val file', 'record = null\n        runCatching { noiseSuppressor?.release() }\n        noiseSuppressor = null\n        val file')
+          p.write_text(s)
+          PY
+          grep -n "VOICE_COMMUNICATION\|NoiseSuppressor" rvc/app/src/main/java/com/ouor/rvcandroid/audio/PcmRecorder.kt
+      - name: Make Gradle wrapper executable
+        run: chmod +x rvc/gradlew
+      - name: Build RVC AI APK
+        working-directory: rvc
+        run: ./gradlew :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: A26-FemaleVoice-debug-APK
-          path: A26_FemaleVoice/app/build/outputs/apk/debug/app-debug.apk
+          name: A26-FemaleVoice-v0.9-RVC-AI
+          path: rvc/app/build/outputs/apk/debug/app-debug.apk
