@@ -41,11 +41,19 @@ jobs:
 
       - name: Checkout w-okada RVC exporter code
         run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/w-okada/voice-changer.git vc
+          git clone --depth 1 --filter=blob:none --no-checkout https://github.com/w-okada/voice-changer.git vc
           cd vc
-          git sparse-checkout set server/voice_changer/RVC server/const.py server/data server/voice_changer/VoiceChangerParamsManager.py
+          git sparse-checkout init --no-cone
+          git sparse-checkout set \
+            '/server/voice_changer/RVC/' \
+            '/server/const.py' \
+            '/server/data/' \
+            '/server/voice_changer/VoiceChangerParamsManager.py' \
+            '/server/voice_changer/__init__.py'
+          git checkout
           cd ..
           test -f vc/server/voice_changer/RVC/onnxExporter/SynthesizerTrnMs768NSFsid_ONNX.py
+          test -f vc/server/const.py
 
       - name: Install export dependencies
         run: |
