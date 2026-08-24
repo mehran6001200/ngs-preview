@@ -1,4 +1,4 @@
-name: A26 RVC AI Build
+name: A26 v1.0 All-in-One AI Build
 on:
   pull_request:
     branches: [ main ]
@@ -9,41 +9,149 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
       - uses: android-actions/setup-android@v3
-      - run: yes | sdkmanager --licenses >/dev/null || true
-      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
       - name: Checkout RVC Android engine
         uses: actions/checkout@v4
         with:
           repository: ouor/RVC-Android
           ref: main
           path: rvc
-      - name: Patch capture for Galaxy A26 voice isolation
+
+      - name: Checkout w-okada RVC exporter code
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('rvc/app/src/main/java/com/ouor/rvcandroid/audio/PcmRecorder.kt')
-          s = p.read_text()
-          s = s.replace('MediaRecorder.AudioSource.MIC,', 'MediaRecorder.AudioSource.VOICE_COMMUNICATION,')
-          s = s.replace('import android.media.MediaRecorder\n', 'import android.media.MediaRecorder\nimport android.media.audiofx.NoiseSuppressor\n')
-          s = s.replace('private var record: AudioRecord? = null\n', 'private var record: AudioRecord? = null\n    private var noiseSuppressor: NoiseSuppressor? = null\n')
-          s = s.replace('rec.startRecording()\n\n        record = rec', 'noiseSuppressor = if (NoiseSuppressor.isAvailable()) {\n            runCatching { NoiseSuppressor.create(rec.audioSessionId)?.also { it.enabled = true } }.getOrNull()\n        } else null\n        rec.startRecording()\n\n        record = rec')
-          s = s.replace('record = null\n        val file', 'record = null\n        runCatching { noiseSuppressor?.release() }\n        noiseSuppressor = null\n        val file')
-          p.write_text(s)
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/w-okada/voice-changer.git vc
+          cd vc
+          git sparse-checkout set server/voice_changer/RVC server/const.py server/data server/voice_changer/VoiceChangerParamsManager.py
+          cd ..
+          test -f vc/server/voice_changer/RVC/onnxExporter/SynthesizerTrnMs768NSFsid_ONNX.py
+
+      - name: Install export dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.2.2
+          pip install --no-cache-dir "numpy<2" onnx==1.16.2
+
+      - name: Download benchmark voice pack sources
+        run: |
+          mkdir -p models
+          curl -L --fail --retry 4 --retry-delay 3 -o models/F.pth \
+            'https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/resolve/main/F/All_F/F.pth?download=true'
+          curl -L --fail --retry 4 --retry-delay 3 -o models/contentvec_768l12_q8.onnx \
+            'https://huggingface.co/TigreGotico/voiceclonnx-rvc/resolve/main/contentvec_768l12_q8.onnx?download=true'
+          curl -L --fail --retry 4 --retry-delay 3 -o models/rmvpe_20231006.onnx \
+            'https://huggingface.co/wok000/vcclient_modules/resolve/main/rmvpe/rmvpe_20231006.onnx?download=true'
+          ls -lh models
+          test $(stat -c%s models/F.pth) -gt 30000000
+          test $(stat -c%s models/contentvec_768l12_q8.onnx) -gt 50000000
+          test $(stat -c%s models/rmvpe_20231006.onnx) -gt 200000000
+
+      - name: Export female RVC checkpoint to Android ONNX
+        run: |
+          python A26_FemaleVoice/export_female_onnx.py \
+            --voice-changer-server vc/server \
+            --input models/F.pth \
+            --output models/female.onnx
+          ls -lh models/female.onnx
+
+      - name: Verify ONNX schemas and metadata
+        run: |
+          python - <<'PY'
+          import json, onnx, os
+
+          def info(path):
+              m = onnx.load(path, load_external_data=False)
+              ins = [x.name for x in m.graph.input]
+              outs = [x.name for x in m.graph.output]
+              meta = {p.key:p.value for p in m.metadata_props}
+              print('\n', path, os.path.getsize(path), '\n inputs=', ins, '\n outputs=', outs, '\n meta=', meta)
+              return ins, outs, meta
+
+          ins, outs, meta = info('models/female.onnx')
+          assert {'feats','p_len','pitch','pitchf','sid'} <= set(ins), ins
+          assert 'audio' in outs, outs
+          md = json.loads(meta['metadata'])
+          assert md['f0'] is True and md['embChannels'] == 768 and md['embOutputLayer'] == 12
+          assert int(md['samplingRate']) in (32000, 40000, 44100, 48000), md
+
+          ins, outs, _ = info('models/contentvec_768l12_q8.onnx')
+          assert ('input_values' in ins or 'audio' in ins), ins
+          assert ('hidden_states' in outs or 'unit12' in outs), outs
+
+          ins, outs, _ = info('models/rmvpe_20231006.onnx')
+          assert {'waveform','threshold'} <= set(ins), ins
+          assert len(outs) >= 1
           PY
-          grep -n "VOICE_COMMUNICATION\|NoiseSuppressor" rvc/app/src/main/java/com/ouor/rvcandroid/audio/PcmRecorder.kt
-      - name: Make Gradle wrapper executable
-        run: chmod +x rvc/gradlew
-      - name: Build RVC AI APK
+
+      - name: Install bundled models into Android assets
+        run: |
+          mkdir -p rvc/app/src/main/assets/a26
+          cp models/female.onnx rvc/app/src/main/assets/a26/female.onnx
+          cp models/contentvec_768l12_q8.onnx rvc/app/src/main/assets/a26/contentvec_768l12_q8.onnx
+          cp models/rmvpe_20231006.onnx rvc/app/src/main/assets/a26/rmvpe_20231006.onnx
+          ls -lh rvc/app/src/main/assets/a26
+
+      - name: Patch RVC Android for A26 all-in-one voice pack
+        run: |
+          python A26_FemaleVoice/patch_rvc_android_v1.py
+          grep -R -n "VOICE_COMMUNICATION\|hidden_states\|preloadBundledVoicePack\|a26-ai-models" \
+            rvc/app/src/main/java/com/ouor/rvcandroid | head -50
+
+      - name: Configure Gradle memory
+        run: |
+          printf '\norg.gradle.jvmargs=-Xmx5g -Dfile.encoding=UTF-8\norg.gradle.workers.max=2\n' >> rvc/gradle.properties
+          chmod +x rvc/gradlew
+
+      - name: Build A26 v1.0 APK
         working-directory: rvc
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Verify APK contains complete voice pack
+        run: |
+          APK=rvc/app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK"
+          ls -lh "$APK"
+          unzip -l "$APK" | grep -E 'assets/a26/(female|contentvec_768l12_q8|rmvpe_20231006)\.onnx'
+          python - <<'PY'
+          from zipfile import ZipFile
+          p='rvc/app/build/outputs/apk/debug/app-debug.apk'
+          with ZipFile(p) as z:
+              bad=z.testzip()
+              assert bad is None, bad
+              names=set(z.namelist())
+              required={
+                  'assets/a26/female.onnx',
+                  'assets/a26/contentvec_768l12_q8.onnx',
+                  'assets/a26/rmvpe_20231006.onnx',
+              }
+              assert required <= names, required-names
+              print('APK ZIP integrity OK; voice pack present')
+          PY
+
       - uses: actions/upload-artifact@v4
         with:
-          name: A26-FemaleVoice-v0.9-RVC-AI
+          name: A26-FemaleVoice-v1.0-ALL-IN-ONE
           path: rvc/app/build/outputs/apk/debug/app-debug.apk
+          compression-level: 0
