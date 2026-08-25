@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="Nami Win" android:usesCleartextTraffic="true">
+    <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="NamiWin Glass V5.1" android:usesCleartextTraffic="true">
         <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
