@@ -1,7 +1,7 @@
-name: Build NamiWin Android PDF
+name: Build NamiWin Android V5.1 Independent
 on:
   push:
-    branches: [namiwin-pdf-save-apk]
+    branches: [namiwin-v51-independent]
   workflow_dispatch:
 
 jobs:
@@ -20,8 +20,8 @@ jobs:
         working-directory: namiwin-android-pdf
         run: gradle assembleDebug --stacktrace
       - name: Rename APK
-        run: cp namiwin-android-pdf/app/build/outputs/apk/debug/app-debug.apk NamiWin-Mobile-PDF.apk
+        run: cp namiwin-android-pdf/app/build/outputs/apk/debug/app-debug.apk NamiWin-Glass-V5.1-Independent.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: NamiWin-Mobile-PDF
-          path: NamiWin-Mobile-PDF.apk
+          name: NamiWin-Glass-V5.1-Independent
+          path: NamiWin-Glass-V5.1-Independent.apk
