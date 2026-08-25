@@ -5,10 +5,10 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.namiwin.glass'
+        applicationId 'com.namiwin.glass.v51independent'
         minSdk 24
         targetSdk 35
-        versionCode 2
-        versionName '1.1-pdf'
+        versionCode 3
+        versionName '1.1-pdf-independent'
     }
 }
