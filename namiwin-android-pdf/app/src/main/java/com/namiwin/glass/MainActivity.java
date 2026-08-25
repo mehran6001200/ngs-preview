@@ -36,7 +36,18 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
-        webView.setWebViewClient(new WebViewClient());
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                // Replace the expensive smooth scroll used by the web page.
+                // On some Android WebView versions that animation stalls when the page is long.
+                String patch = "(function(){window.showDoc=function(type){buildDoc(type);var d=document.getElementById('doc');if(d){d.style.display='block';var y=d.offsetTop||0;window.scrollTo(0,y);}};})();";
+                view.evaluateJavascript(patch, null);
+            }
+        });
         webView.addJavascriptInterface(new AndroidBridge(), "Android");
         setContentView(webView);
         webView.loadUrl("file:///android_asset/index.html");
@@ -124,6 +135,14 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (webView.canGoBack()) webView.goBack(); else super.onBackPressed();
+        webView.evaluateJavascript("(function(){var d=document.getElementById('doc');return d&&d.style.display==='block';})()", value -> {
+            if ("true".equals(value)) {
+                webView.evaluateJavascript("(function(){var d=document.getElementById('doc');if(d)d.style.display='none';window.scrollTo(0,0);})();", null);
+            } else if (webView.canGoBack()) {
+                webView.goBack();
+            } else {
+                MainActivity.super.onBackPressed();
+            }
+        });
     }
 }
