@@ -1,0 +1,27 @@
+name: Build NamiWin Android PDF
+on:
+  push:
+    branches: [namiwin-pdf-save-apk]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build APK
+        working-directory: namiwin-android-pdf
+        run: gradle assembleDebug --stacktrace
+      - name: Rename APK
+        run: cp namiwin-android-pdf/app/build/outputs/apk/debug/app-debug.apk NamiWin-Mobile-PDF.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NamiWin-Mobile-PDF
+          path: NamiWin-Mobile-PDF.apk
