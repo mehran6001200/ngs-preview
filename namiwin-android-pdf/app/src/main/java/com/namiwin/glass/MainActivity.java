@@ -3,14 +3,13 @@ package com.namiwin.glass;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Canvas;
+import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.CancellationSignal;
 import android.os.ParcelFileDescriptor;
-import android.print.PageRange;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
-import android.print.PrintDocumentInfo;
 import android.print.PrintManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
@@ -18,12 +17,12 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
+import java.io.FileOutputStream;
 import java.io.IOException;
 
 public class MainActivity extends Activity {
     private static final int REQ_CREATE_PDF = 901;
     private WebView webView;
-    private PrintDocumentAdapter pendingAdapter;
     private String pendingFileName = "NamiWin.pdf";
 
     @Override
@@ -35,6 +34,7 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
+        s.setBuiltInZoomControls(false);
         webView.setWebViewClient(new WebViewClient());
         webView.addJavascriptInterface(new AndroidBridge(), "Android");
         setContentView(webView);
@@ -47,13 +47,14 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 String safe = invoiceNo == null ? "NamiWin" : invoiceNo.replaceAll("[^A-Za-z0-9_-]", "_");
                 pendingFileName = "NamiWin-" + safe + ".pdf";
-                webView.evaluateJavascript("(function(){var p=document.getElementById('invoicePanel');if(p)p.style.display='block';document.body.classList.add('android-pdf');})();", v -> {
-                    pendingAdapter = webView.createPrintDocumentAdapter("NamiWin");
-                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    intent.setType("application/pdf");
-                    intent.putExtra(Intent.EXTRA_TITLE, pendingFileName);
-                    startActivityForResult(intent, REQ_CREATE_PDF);
+                webView.evaluateJavascript("document.body.classList.add('pdf-mode');", v -> {
+                    webView.postDelayed(() -> {
+                        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("application/pdf");
+                        intent.putExtra(Intent.EXTRA_TITLE, pendingFileName);
+                        startActivityForResult(intent, REQ_CREATE_PDF);
+                    }, 250);
                 });
             });
         }
@@ -61,12 +62,14 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void printDocument() {
             runOnUiThread(() -> {
-                PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
-                PrintDocumentAdapter adapter = webView.createPrintDocumentAdapter("NamiWin");
-                pm.print("NamiWin", adapter, new PrintAttributes.Builder()
-                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                        .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
-                        .build());
+                webView.evaluateJavascript("document.body.classList.add('pdf-mode');", v -> {
+                    PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                    PrintDocumentAdapter adapter = webView.createPrintDocumentAdapter("NamiWin");
+                    pm.print("NamiWin", adapter, new PrintAttributes.Builder()
+                            .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                            .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
+                            .build());
+                });
             });
         }
     }
@@ -74,56 +77,53 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQ_CREATE_PDF || resultCode != RESULT_OK || data == null || pendingAdapter == null) return;
-        Uri uri = data.getData();
-        if (uri == null) return;
-
-        final ParcelFileDescriptor pfd;
-        try {
-            pfd = getContentResolver().openFileDescriptor(uri, "w");
-        } catch (Exception e) {
-            Toast.makeText(this, "خطا در ایجاد فایل PDF", Toast.LENGTH_LONG).show();
+        if (requestCode != REQ_CREATE_PDF) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            webView.evaluateJavascript("document.body.classList.remove('pdf-mode');", null);
             return;
         }
-        if (pfd == null) return;
+        Uri uri = data.getData();
+        webView.postDelayed(() -> writeWebViewPdf(uri), 300);
+    }
 
-        PrintAttributes attrs = new PrintAttributes.Builder()
-                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                .setResolution(new PrintAttributes.Resolution("namiwin", "NamiWin", 300, 300))
-                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-                .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
-                .build();
+    private void writeWebViewPdf(Uri uri) {
+        final int pageWidth = 1240;
+        final int pageHeight = 1754;
+        int viewWidth = Math.max(1, webView.getWidth());
+        float contentHeight = Math.max(webView.getHeight(), webView.getContentHeight() * webView.getScale());
+        float scale = (float) pageWidth / (float) viewWidth;
+        float scaledHeight = contentHeight * scale;
+        int pageCount = Math.max(1, (int) Math.ceil(scaledHeight / pageHeight));
 
-        final PrintDocumentAdapter adapter = pendingAdapter;
-        adapter.onStart();
-        adapter.onLayout(null, attrs, new CancellationSignal(), new PrintDocumentAdapter.LayoutResultCallback() {
-            @Override
-            public void onLayoutFinished(PrintDocumentInfo info, boolean changed) {
-                adapter.onWrite(new PageRange[]{PageRange.ALL_PAGES}, pfd, new CancellationSignal(), new PrintDocumentAdapter.WriteResultCallback() {
-                    @Override
-                    public void onWriteFinished(PageRange[] pages) {
-                        try { pfd.close(); } catch (IOException ignored) {}
-                        adapter.onFinish();
-                        pendingAdapter = null;
-                        Toast.makeText(MainActivity.this, "PDF با موفقیت ذخیره شد", Toast.LENGTH_LONG).show();
-                    }
-                    @Override
-                    public void onWriteFailed(CharSequence error) {
-                        try { pfd.close(); } catch (IOException ignored) {}
-                        adapter.onFinish();
-                        pendingAdapter = null;
-                        Toast.makeText(MainActivity.this, "ذخیره PDF ناموفق بود", Toast.LENGTH_LONG).show();
-                    }
-                });
+        PdfDocument pdf = new PdfDocument();
+        try {
+            for (int i = 0; i < pageCount; i++) {
+                PdfDocument.PageInfo pageInfo = new PdfDocument.PageInfo.Builder(pageWidth, pageHeight, i + 1).create();
+                PdfDocument.Page page = pdf.startPage(pageInfo);
+                Canvas canvas = page.getCanvas();
+                canvas.drawColor(android.graphics.Color.WHITE);
+                canvas.save();
+                canvas.scale(scale, scale);
+                canvas.translate(0, -(i * pageHeight / scale));
+                webView.draw(canvas);
+                canvas.restore();
+                pdf.finishPage(page);
             }
-            @Override
-            public void onLayoutFailed(CharSequence error) {
-                try { pfd.close(); } catch (IOException ignored) {}
-                adapter.onFinish();
-                pendingAdapter = null;
-                Toast.makeText(MainActivity.this, "آماده‌سازی PDF ناموفق بود", Toast.LENGTH_LONG).show();
-            }
-        }, null);
+
+            ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "w");
+            if (pfd == null) throw new IOException("Could not open output file");
+            FileOutputStream out = new FileOutputStream(pfd.getFileDescriptor());
+            pdf.writeTo(out);
+            out.flush();
+            out.close();
+            pfd.close();
+            Toast.makeText(this, "PDF با موفقیت ذخیره شد", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "خطا در ذخیره PDF: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        } finally {
+            pdf.close();
+            webView.evaluateJavascript("document.body.classList.remove('pdf-mode');", null);
+        }
     }
 
     @Override
