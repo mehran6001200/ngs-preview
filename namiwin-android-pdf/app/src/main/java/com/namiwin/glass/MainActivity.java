@@ -24,6 +24,8 @@ public class MainActivity extends Activity {
     private static final int REQ_CREATE_PDF = 901;
     private WebView webView;
     private String pendingFileName = "NamiWin.pdf";
+    private final String enterPdfMode = "(function(){document.querySelectorAll('.edit,.top,.bottom').forEach(function(e){e.dataset.oldDisplay=e.style.display||'';e.style.display='none';});var d=document.getElementById('doc');if(d)d.style.display='block';document.body.style.background='#fff';document.body.style.padding='0';window.scrollTo(0,0);})();";
+    private final String exitPdfMode = "(function(){document.querySelectorAll('.edit,.top,.bottom').forEach(function(e){e.style.display=e.dataset.oldDisplay||'';delete e.dataset.oldDisplay;});document.body.style.background='';document.body.style.padding='';})();";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -34,7 +36,6 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
-        s.setBuiltInZoomControls(false);
         webView.setWebViewClient(new WebViewClient());
         webView.addJavascriptInterface(new AndroidBridge(), "Android");
         setContentView(webView);
@@ -47,30 +48,26 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 String safe = invoiceNo == null ? "NamiWin" : invoiceNo.replaceAll("[^A-Za-z0-9_-]", "_");
                 pendingFileName = "NamiWin-" + safe + ".pdf";
-                webView.evaluateJavascript("document.body.classList.add('pdf-mode');", v -> {
-                    webView.postDelayed(() -> {
-                        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                        intent.addCategory(Intent.CATEGORY_OPENABLE);
-                        intent.setType("application/pdf");
-                        intent.putExtra(Intent.EXTRA_TITLE, pendingFileName);
-                        startActivityForResult(intent, REQ_CREATE_PDF);
-                    }, 250);
-                });
+                webView.evaluateJavascript(enterPdfMode, v -> webView.postDelayed(() -> {
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("application/pdf");
+                    intent.putExtra(Intent.EXTRA_TITLE, pendingFileName);
+                    startActivityForResult(intent, REQ_CREATE_PDF);
+                }, 300));
             });
         }
 
         @JavascriptInterface
         public void printDocument() {
-            runOnUiThread(() -> {
-                webView.evaluateJavascript("document.body.classList.add('pdf-mode');", v -> {
-                    PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
-                    PrintDocumentAdapter adapter = webView.createPrintDocumentAdapter("NamiWin");
-                    pm.print("NamiWin", adapter, new PrintAttributes.Builder()
-                            .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                            .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
-                            .build());
-                });
-            });
+            runOnUiThread(() -> webView.evaluateJavascript(enterPdfMode, v -> {
+                PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                PrintDocumentAdapter adapter = webView.createPrintDocumentAdapter("NamiWin");
+                pm.print("NamiWin", adapter, new PrintAttributes.Builder()
+                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                        .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
+                        .build());
+            }));
         }
     }
 
@@ -79,11 +76,11 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != REQ_CREATE_PDF) return;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
-            webView.evaluateJavascript("document.body.classList.remove('pdf-mode');", null);
+            webView.evaluateJavascript(exitPdfMode, null);
             return;
         }
         Uri uri = data.getData();
-        webView.postDelayed(() -> writeWebViewPdf(uri), 300);
+        webView.postDelayed(() -> writeWebViewPdf(uri), 350);
     }
 
     private void writeWebViewPdf(Uri uri) {
@@ -109,7 +106,6 @@ public class MainActivity extends Activity {
                 canvas.restore();
                 pdf.finishPage(page);
             }
-
             ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "w");
             if (pfd == null) throw new IOException("Could not open output file");
             FileOutputStream out = new FileOutputStream(pfd.getFileDescriptor());
@@ -119,10 +115,10 @@ public class MainActivity extends Activity {
             pfd.close();
             Toast.makeText(this, "PDF با موفقیت ذخیره شد", Toast.LENGTH_LONG).show();
         } catch (Exception e) {
-            Toast.makeText(this, "خطا در ذخیره PDF: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "خطا در ذخیره PDF", Toast.LENGTH_LONG).show();
         } finally {
             pdf.close();
-            webView.evaluateJavascript("document.body.classList.remove('pdf-mode');", null);
+            webView.evaluateJavascript(exitPdfMode, null);
         }
     }
 
