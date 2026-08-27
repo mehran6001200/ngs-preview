@@ -1,0 +1,2 @@
+A26 Female Voice v1.0 all-in-one RVC benchmark build trigger.
+Female synth + quantized ContentVec + waveform RMVPE + close-voice capture.
