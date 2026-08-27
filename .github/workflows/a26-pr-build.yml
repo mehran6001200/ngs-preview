@@ -1,4 +1,4 @@
-name: A26 v1.2 Natural Female Build
+name: A26 v1.3 Indexed Female Build
 permissions:
   contents: write
 
@@ -12,7 +12,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 85
     env:
       PYTHONUNBUFFERED: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
@@ -57,44 +57,61 @@ jobs:
           cd ..
           test -f vc/server/voice_changer/RVC/onnxExporter/SynthesizerTrnMs768NSFsid_ONNX.py
 
-      - name: Install model verification dependencies
+      - name: Install model and retrieval dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.2.2
-          pip install --no-cache-dir "numpy<2" onnx==1.16.2 onnxruntime==1.20.0
+          pip install --no-cache-dir "numpy<2" onnx==1.16.2 onnxruntime==1.20.0 faiss-cpu==1.8.0.post1
 
-      - name: Download full FP32 base models
+      - name: Download p249 female voice pack sources
         run: |
           mkdir -p models
-          curl -L --fail --retry 5 --retry-delay 3 -o models/F.pth \
-            'https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/resolve/main/F/All_F/F.pth?download=true'
+          curl -L --fail --retry 5 --retry-delay 3 -o models/Fp249.pth \
+            'https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/resolve/main/F/p249/Fp249.pth?download=true'
+          curl -L --fail --retry 5 --retry-delay 3 -o models/p249.index \
+            'https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/resolve/main/F/p249/added_IVF1104_Flat_nprobe_1_Fp249_v2.index?download=true'
           curl -L --fail --retry 5 --retry-delay 3 -o models/contentvec_768l12.onnx \
             'https://huggingface.co/TigreGotico/voiceclonnx-rvc/resolve/main/contentvec_768l12.onnx?download=true'
           curl -L --fail --retry 5 --retry-delay 3 -o models/rmvpe_20231006.onnx \
             'https://huggingface.co/wok000/vcclient_modules/resolve/main/rmvpe/rmvpe_20231006.onnx?download=true'
           ls -lh models
-          test $(stat -c%s models/F.pth) -gt 30000000
+          test $(stat -c%s models/Fp249.pth) -gt 30000000
+          test $(stat -c%s models/p249.index) -gt 100000000
           test $(stat -c%s models/contentvec_768l12.onnx) -gt 300000000
           test $(stat -c%s models/rmvpe_20231006.onnx) -gt 300000000
 
-      - name: Export female RVC model as FP32 ONNX
+      - name: Export p249 RVC model as FP32 Android ONNX
         run: |
           python A26_FemaleVoice/export_female_onnx.py \
             --voice-changer-server vc/server \
-            --input models/F.pth \
+            --input models/Fp249.pth \
             --output models/female.onnx
           ls -lh models/female.onnx
           test $(stat -c%s models/female.onnx) -gt 80000000
 
-      - name: Verify schemas and load every model in ONNX Runtime 1.20
+      - name: Convert real p249 FAISS index to Android retrieval ONNX
+        run: |
+          python A26_FemaleVoice/build_retrieval_onnx.py \
+            --index models/p249.index \
+            --output models/retrieval_p249.onnx \
+            --topk 8
+          ls -lh models/retrieval_p249.onnx
+          test $(stat -c%s models/retrieval_p249.onnx) -gt 1000000
+          test $(stat -c%s models/retrieval_p249.onnx) -lt 20000000
+
+      - name: Verify all ONNX models and run retrieval smoke test
         run: |
           python - <<'PY'
-          import json, os, onnx, onnxruntime as ort
+          import json, os
+          import numpy as np
+          import onnx
+          import onnxruntime as ort
 
           paths = [
               'models/female.onnx',
               'models/contentvec_768l12.onnx',
               'models/rmvpe_20231006.onnx',
+              'models/retrieval_p249.onnx',
           ]
 
           def schema(path):
@@ -107,10 +124,9 @@ jobs:
               print('\n', path, os.path.getsize(path))
               print(' inputs=', ins)
               print(' outputs=', outs)
-              print(' ops sample=', ops[:30], 'count=', len(ops))
               return ins, outs, meta, ops
 
-          ins, outs, meta, ops = schema(paths[0])
+          ins, outs, meta, _ = schema(paths[0])
           assert {'feats','p_len','pitch','pitchf','sid'} <= set(ins), ins
           assert 'audio' in outs, outs
           md = json.loads(meta['metadata'])
@@ -119,54 +135,60 @@ jobs:
           ins, outs, _, ops = schema(paths[1])
           assert ('input_values' in ins or 'audio' in ins), ins
           assert ('hidden_states' in outs or 'unit12' in outs), outs
-          assert 'ConvInteger' not in ops, 'Android-incompatible ConvInteger found'
+          assert 'ConvInteger' not in ops
 
-          ins, outs, _, ops = schema(paths[2])
+          ins, outs, _, _ = schema(paths[2])
           assert {'waveform','threshold'} <= set(ins), ins
-          assert len(outs) >= 1
+
+          ins, outs, _, ops = schema(paths[3])
+          assert ins == ['feats'], ins
+          assert outs == ['retrieved'], outs
+          assert {'TopK','Gather','MatMul'} <= set(ops), ops
 
           print('\nCreating CPU sessions with ONNX Runtime', ort.__version__)
+          sessions = {}
           for p in paths:
-              s = ort.InferenceSession(
-                  p,
-                  providers=['CPUExecutionProvider'],
-                  sess_options=ort.SessionOptions(),
-              )
-              print(' LOAD OK:', p, [i.name for i in s.get_inputs()], [o.name for o in s.get_outputs()])
-              del s
+              sessions[p] = ort.InferenceSession(p, providers=['CPUExecutionProvider'])
+              print(' LOAD OK:', p)
 
-          print('ALL THREE FP32 MODELS LOAD SUCCESSFULLY')
+          x = np.random.default_rng(42).normal(size=(1, 6, 768)).astype(np.float32)
+          y = sessions['models/retrieval_p249.onnx'].run(['retrieved'], {'feats': x})[0]
+          assert y.shape == x.shape, (x.shape, y.shape)
+          assert np.isfinite(y).all()
+          print(' RETRIEVAL RUN OK:', y.shape, float(np.mean(np.abs(y))))
+          print('ALL FOUR MODELS VERIFIED')
           PY
 
-      - name: Install compatible voice pack into Android assets
+      - name: Install v1.3 indexed voice pack into Android assets
         run: |
           mkdir -p rvc/app/src/main/assets/a26
           cp models/female.onnx rvc/app/src/main/assets/a26/female.onnx
           cp models/contentvec_768l12.onnx rvc/app/src/main/assets/a26/contentvec_768l12.onnx
           cp models/rmvpe_20231006.onnx rvc/app/src/main/assets/a26/rmvpe_20231006.onnx
+          cp models/retrieval_p249.onnx rvc/app/src/main/assets/a26/retrieval_p249.onnx
           ls -lh rvc/app/src/main/assets/a26
 
-      - name: Patch RVC Android for A26 v1.2 natural female
+      - name: Patch RVC Android for A26 v1.3 indexed inference
         run: |
-          python A26_FemaleVoice/patch_rvc_android_v1.py
-          grep -R -n "VOICE_COMMUNICATION\|contentvec_768l12.onnx\|preloadBundledVoicePack" \
-            rvc/app/src/main/java/com/ouor/rvcandroid | head -50
+          python A26_FemaleVoice/patch_rvc_android_v13.py
+          grep -R -n "retrieval_p249\|INDEX_RATE\|PROTECT\|RMS_MIX_RATE\|VOICE_RECOGNITION" \
+            rvc/app/src/main/java/com/ouor/rvcandroid | head -80
 
       - name: Configure Gradle memory
         run: |
           printf '\norg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8\norg.gradle.workers.max=2\n' >> rvc/gradle.properties
           chmod +x rvc/gradlew
 
-      - name: Build A26 v1.2 Natural APK
+      - name: Build A26 v1.3 Indexed APK
         working-directory: rvc
         run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Verify APK integrity and FP32 voice pack
+      - name: Verify APK integrity and indexed voice pack
         run: |
           APK=rvc/app/build/outputs/apk/debug/app-debug.apk
           test -f "$APK"
           ls -lh "$APK"
-          unzip -l "$APK" | grep -E 'assets/a26/(female|contentvec_768l12|rmvpe_20231006)\.onnx'
+          unzip -l "$APK" | grep -E 'assets/a26/(female|contentvec_768l12|rmvpe_20231006|retrieval_p249)\.onnx'
           python - <<'PY'
           from zipfile import ZipFile
           p='rvc/app/build/outputs/apk/debug/app-debug.apk'
@@ -177,21 +199,22 @@ jobs:
                   'assets/a26/female.onnx',
                   'assets/a26/contentvec_768l12.onnx',
                   'assets/a26/rmvpe_20231006.onnx',
+                  'assets/a26/retrieval_p249.onnx',
               }
               assert required <= names, required-names
-              print('APK ZIP integrity OK; full FP32 voice pack present')
+              print('APK ZIP integrity OK; v1.3 indexed p249 pack present')
           PY
 
-      - name: Publish direct GitHub Release v1.2
+      - name: Publish direct GitHub Release v1.3
         if: github.head_ref == 'a26-build-v2'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG='a26-v1.2-natural'
+          TAG='a26-v1.3-indexed'
           APK='rvc/app/build/outputs/apk/debug/app-debug.apk'
-          OUT='A26_FemaleVoice_v1.2_NATURAL_FP32.apk'
+          OUT='A26_FemaleVoice_v1.3_INDEXED_p249.apk'
           cp "$APK" "$OUT"
           gh release delete "$TAG" --cleanup-tag -y >/dev/null 2>&1 || true
           gh release create "$TAG" "$OUT" \
-            --title 'A26 Female Voice v1.2 Natural' \
-            --notes 'Natural female build: full FP32 models plus 48k voice-recognition capture, anti-alias sinc resampling, RMVPE F0 smoothing and default +9 semitones.'
+            --title 'A26 Female Voice v1.3 Indexed p249' \
+            --notes 'RVC p249 single-female target with Android retrieval ONNX from the real p249 FAISS index, index_rate 0.55, protect 0.33, RMS mix 0.25, RMVPE smoothing, anti-alias resampling and +8 semitone default.'
